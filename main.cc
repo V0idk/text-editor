@@ -18,50 +18,12 @@
 using namespace std;
 
 static struct termios orig_termios;
+
 deque<string> lines;
 char *filename;
-int wx,wy;
+int wx;
 int x = 1,y = 1;
 int screenrows, screencols;
-
-const int ADD = 1;
-const int DEL = 2;
-
-const int IFLAG = 1;
-const int OFLAG = 2;
-const int CFLAG = 3;
-const int LFLAG = 4;
-
-int updateflag(int fd,
-             int mode,
-             int which,
-             vector<tcflag_t> flags) {
-    struct termios raw;
-    if (!isatty(fd)) goto fatal;
-    if (tcgetattr(fd,&raw) == -1) goto fatal;
-
-    auto op1 = [](int mode, tcflag_t* old,tcflag_t flag){
-        if(mode == DEL)
-            *old &= ~(flag);
-        if(mode == ADD)
-            *old |= flag;
-    };
-    for(auto flag: flags){
-        if(which == IFLAG)
-            op1(mode,&raw.c_iflag,flag);
-        if(which == OFLAG)
-            op1(mode,&raw.c_oflag,flag);
-        if(which == CFLAG)
-            op1(mode,&raw.c_cflag,flag);
-        if(which == LFLAG)
-            op1(mode,&raw.c_lflag,flag);
-    }
-    if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
-        return 0;
-    fatal:
-    errno = ENOTTY;
-    return -1;
-}
 
 int enableRawMode() {
     struct termios raw;
@@ -94,7 +56,6 @@ int enableRawMode() {
 
 enum KEY_ACTION{
     CTRL_H = 8,         /* \b 向前删除*/
-    TAB = 9,            /* Tab */
     ENTER = 13,         /* Enter */
     CTRL_Q = 17,        /* Ctrl-q */
     CTRL_S = 19,        /* Ctrl-s */
@@ -105,7 +66,7 @@ enum KEY_ACTION{
     ARROW_RIGHT,
     ARROW_UP,
     ARROW_DOWN,
-    DEL_KEY, /* delete是向后删除 */
+    DEL_KEY, /* delete是向后删除. 此处实现统一向前*/
     HOME_KEY,
     END_KEY,
     PAGE_UP,
@@ -152,8 +113,6 @@ int editorReadKey(int fd) {
     }
 }
 
-
-
 void editorSave(){
     char tmpname[256];
     ofstream f;
@@ -186,6 +145,34 @@ void arrowDown(){
     }
 }
 
+void arrowUp(){
+    if(x == 1) {
+        if(wx == 0)
+            return;
+        if(y > lines[wx + x - 2].size())
+            y = lines[wx + x - 2].size() + 1;
+        wx -= 1;
+    }
+    else if(x > 1) {
+        if(y > lines[wx + x - 2].size())
+            y = lines[wx + x - 2].size() + 1;
+        x -= 1;
+    }
+}
+
+void delChar(){
+    if( y == 1){
+        if(x == 1)
+            return;
+        lines[wx + x - 2] += lines[wx + x - 1];
+        lines.erase(lines.begin() + wx + x - 1);
+        y = lines[wx + x - 2].size() + 1;
+        x -= 1;
+    }else if( y > 1){
+        lines[wx + x - 1].erase(lines[wx + x - 1].begin()+ y - 2 );
+        y -= 1;
+    }
+}
 
 void editorProcessKeypress(int fd) {
     int c = editorReadKey(fd);
@@ -199,7 +186,6 @@ void editorProcessKeypress(int fd) {
             }else{
                 lines.insert(lines.begin() + wx + x ,string());
             }
-//            x += 1;
             arrowDown();
             y = 1;
             break;
@@ -212,17 +198,7 @@ void editorProcessKeypress(int fd) {
         case BACKSPACE:
         case CTRL_H:
         case DEL_KEY:
-            if( y == 1){
-                if(x == 1)
-                    break;
-                lines[wx + x - 2] += lines[wx + x - 1];
-                lines.erase(lines.begin() + wx + x - 1);
-                y = lines[wx + x - 2].size() + 1;
-                x -= 1;
-            }else if( y > 1){
-                lines[wx + x - 1].erase(lines[wx + x - 1].begin()+ y - 2 );
-                y -= 1;
-            }
+            delChar();
             break;
         case PAGE_UP:
             if(wx < screenrows - 1)
@@ -239,18 +215,7 @@ void editorProcessKeypress(int fd) {
             x = y = 1;
             break;
         case ARROW_UP:
-            if(x == 1) {
-                if(wx == 0)
-                    break;
-                if(y > lines[wx + x - 2].size())
-                    y = lines[wx + x - 2].size() + 1;
-                wx -= 1;
-            }
-            else if(x > 1) {
-                if(y > lines[wx + x - 2].size())
-                    y = lines[wx + x - 2].size() + 1;
-                x -= 1;
-            }
+            arrowUp();
             break;
         case ARROW_DOWN:
             arrowDown();
@@ -271,12 +236,6 @@ void editorProcessKeypress(int fd) {
     }
 }
 
-/*
- 文件定位为可读文本编辑器：
-    为了记录变化和方便显示，以行记录文件数据到内存。
- */
-
-
 void readFile(){
     ifstream input(filename);
     string line;
@@ -287,16 +246,16 @@ void readFile(){
     }
 }
 
-int getCursorPosition(int ifd, int ofd) {
+int getCursorPosition() {
     char buf[32];
     unsigned int i = 0;
 
     /* Report cursor location */
-    if (write(ofd, "\x1b[6n", 4) != 4) return -1;
+    if (write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;
 
     /* Read the response: ESC [ rows ; cols R */
     while (i < sizeof(buf)-1) {
-        if (read(ifd,buf+i,1) != 1) break;
+        if (read(STDIN_FILENO,buf+i,1) != 1) break;
         if (buf[i] == 'R') break;
         i++;
     }
@@ -308,7 +267,7 @@ int getCursorPosition(int ifd, int ofd) {
     return 0;
 }
 
-int getWindowSize(int ifd, int ofd) {
+int getWindowSize() {
     struct winsize ws;
 
     if (ioctl(1, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
@@ -316,18 +275,18 @@ int getWindowSize(int ifd, int ofd) {
         int orig_row, orig_col, retval;
 
         /* Get the initial position so we can restore it later. */
-        retval = getCursorPosition(ifd,ofd);
+        retval = getCursorPosition();
         if (retval == -1) goto failed;
 
         /* Go to right/bottom margin and get position. */
-        if (write(ofd,"\x1b[999C\x1b[999B",12) != 12) goto failed;
-        retval = getCursorPosition(ifd,ofd);
+        if (write(STDOUT_FILENO,"\x1b[999C\x1b[999B",12) != 12) goto failed;
+        retval = getCursorPosition();
         if (retval == -1) goto failed;
 
         /* Restore position. */
         char seq[32];
         snprintf(seq,32,"\x1b[%d;%dH",orig_row,orig_col);
-        if (write(ofd,seq,strlen(seq)) == -1) {
+        if (write(STDOUT_FILENO,seq,strlen(seq)) == -1) {
             /* Can't recover... */
         }
         return 0;
@@ -348,8 +307,6 @@ void textWindowFresh(){
     for(int i=0;i < screenrows -1 ;i++){
         if(wx+i >= lines.size() ){
             buffer << "\x1b[0K" << "~";
-//            for(int t=1;t < screencols;t++)
-//                buffer << " ";
             buffer << "\r\n";
         }
         else{
@@ -364,44 +321,16 @@ void textWindowFresh(){
                     line += c;
             }
             buffer << "\x1b[0K" << line;
-//            for(int t = lines[wx+i].size() + tabnum;t < screencols; t++)
-//                buffer << " ";
             buffer << "\r\n";
         }
     }
-
     char buf[32];
     snprintf(buf,sizeof(buf),"\x1b[%d;%dH",x,y+tabnum);
     buffer << buf;
     write(STDOUT_FILENO,buffer.str().c_str(),buffer.str().size());
 }
 
-void textWindowFresh1(){
-
-    write(STDOUT_FILENO,"\x1b[0;0H",6);
-
-    for(int i=0;i < screenrows -1 ;i++){
-        if(wx+i >= lines.size() ){
-            write(STDOUT_FILENO,"~",1);
-            for(int t=1;t < screencols;t++)
-                write(STDOUT_FILENO," ",1);
-            write(STDOUT_FILENO,"\r\n",2);
-        }
-        else{
-            write(STDOUT_FILENO,lines[wx+i].c_str(),lines[wx+i].size());
-            for(int t = lines[wx+i].size();t < screencols; t++)
-                write(STDOUT_FILENO," ",1);
-            write(STDOUT_FILENO,"\r\n",2);
-        }
-    }
-    char buf[32];
-    snprintf(buf,sizeof(buf),"\x1b[%d;%dH",x,y);
-    write(STDOUT_FILENO,buf,strlen(buf));
-}
-
 void initEditor(){
-    cout.setf(std::ios::unitbuf);
-
     string buf;
     buf += "~\r\n";
     for(int i=0;i<screenrows -1 ;i++)
@@ -410,18 +339,13 @@ void initEditor(){
 }
 
 int main(int argc, char **argv){
-
     filename = argv[1];
-
     enableRawMode();
     initEditor();
     readFile();
-    getWindowSize(STDIN_FILENO,STDOUT_FILENO);
-
+    getWindowSize();
     while(1) {
         textWindowFresh();
         editorProcessKeypress(STDIN_FILENO);
     }
-    printf("finish\n");
-    exit(EXIT_SUCCESS);
 }
