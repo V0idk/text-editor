@@ -1,0 +1,16 @@
+# text-editor  
+
+usage:  
+
+./editor flename
+
+save: ctrl + s  
+quit: ctrl + q  
+
+key:
+  arrow up, down, left, right  
+  page down,up  
+  backspace  
+  enter  
+  tab  
+ 
